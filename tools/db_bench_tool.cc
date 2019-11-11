@@ -1066,8 +1066,7 @@ rocksdb::Env* CreateAwsEnv(const std::string& dbpath ,
                             std::unique_ptr<rocksdb::Env>* result) {
   fprintf(stderr, "Creating AwsEnv for path %s\n", dbpath.c_str());
   std::shared_ptr<rocksdb::Logger> info_log;
-  info_log.reset(new rocksdb::StderrLogger(
-                     rocksdb::InfoLogLevel::WARN_LEVEL));
+  info_log.reset(new rocksdb::StderrLogger(rocksdb::InfoLogLevel::WARN_LEVEL));
   rocksdb::CloudEnvOptions coptions;
   std::string region;
   if (FLAGS_aws_access_id.size() != 0) {
@@ -1080,10 +1079,8 @@ rocksdb::Env* CreateAwsEnv(const std::string& dbpath ,
   coptions.keep_local_sst_files = FLAGS_keep_local_sst_files;
   coptions.TEST_Initialize("dbbench.", "", region);
   rocksdb::CloudEnv* s;
-  rocksdb::Status st = rocksdb::AwsEnv::NewAwsEnv(rocksdb::Env::Default(),
-                                                  coptions,
-                                                  std::move(info_log),
-                                                  &s);
+  rocksdb::Status st = rocksdb::AwsEnv::NewAwsEnv(
+      rocksdb::Env::Default(), coptions, std::move(info_log), &s);
   assert(st.ok());
   ((rocksdb::CloudEnvImpl*)s)->TEST_DisableCloudManifest();
   result->reset(s);

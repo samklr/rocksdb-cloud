@@ -88,12 +88,10 @@ void BucketOptions::TEST_Initialize(const std::string& bucket,
   }
 }
 
-CloudEnv::CloudEnv(const CloudEnvOptions& options, Env *base, const std::shared_ptr<Logger>& logger)
-  : cloud_env_options(options),
-    base_env_(base),
-    info_log_(logger) {
-}
-  
+CloudEnv::CloudEnv(const CloudEnvOptions& options, Env* base,
+                   const std::shared_ptr<Logger>& logger)
+    : cloud_env_options(options), base_env_(base), info_log_(logger) {}
+
 CloudEnv::~CloudEnv() {}
 
 CloudEnvWrapper::~CloudEnvWrapper() {}
@@ -114,12 +112,15 @@ Status CloudEnv::NewAwsEnv(
   return NewAwsEnv(base_env, options, logger, cenv);
 }
 
-Status CloudEnv::NewAwsEnv(Env* base_env,
-                           const CloudEnvOptions& options,
-                           const std::shared_ptr<Logger> & logger, CloudEnv** cenv) {
 #ifndef USE_AWS
+Status CloudEnv::NewAwsEnv(Env*, const CloudEnvOptions&,
+                           const std::shared_ptr<Logger>&, CloudEnv**) {
   return Status::NotSupported("RocksDB Cloud not compiled with AWS support");
+}
 #else
+Status CloudEnv::NewAwsEnv(Env* base_env, const CloudEnvOptions& options,
+                           const std::shared_ptr<Logger>& logger,
+                           CloudEnv** cenv) {
   // Dump out cloud env options
   options.Dump(logger.get());
 
@@ -135,8 +136,8 @@ Status CloudEnv::NewAwsEnv(Env* base_env,
     }
   }
   return st;
-#endif
 }
+#endif
 
 }  // namespace rocksdb
 #endif  // ROCKSDB_LITE

@@ -179,7 +179,9 @@ Status DBCloudImpl::Savepoint() {
   for (auto onefile : live_files) {
     auto remapped_fname = cenv->RemapFilename(onefile.name);
     std::string destpath = cenv->GetDestObjectPath() + "/" + remapped_fname;
-    if (!cenv->ExistsObject(cenv->GetDestBucketName(), destpath).ok()) {
+    if (!cenv->storage_provider_
+             ->ExistsObject(cenv->GetDestBucketName(), destpath)
+             .ok()) {
       to_copy.push_back(remapped_fname);
     }
   }
@@ -195,7 +197,7 @@ Status DBCloudImpl::Savepoint() {
         break;
       }
       auto& onefile = to_copy[idx];
-      Status s = cenv->CopyObject(
+      Status s = cenv->storage_provider_->CopyObject(
           cenv->GetSrcBucketName(), cenv->GetSrcObjectPath() + "/" + onefile,
           cenv->GetDestBucketName(), cenv->GetDestObjectPath() + "/" + onefile);
       if (!s.ok()) {
@@ -301,9 +303,9 @@ Status DBCloudImpl::DoCheckpointToCloud(
       }
 
       auto& f = files_to_copy[idx];
-      auto copy_st =
-          cenv->PutObject(GetName() + "/" + f.first, destination.GetBucketName(),
-                          destination.GetObjectPath() + "/" + f.second);
+      auto copy_st = cenv->storage_provider_->PutObject(
+          GetName() + "/" + f.first, destination.GetBucketName(),
+          destination.GetObjectPath() + "/" + f.second);
       if (!copy_st.ok()) {
         thread_statuses[threadId] = std::move(copy_st);
         break;

@@ -2,14 +2,14 @@
 //
 //
 
-#include "rocksdb/cloud/cloud_env_options.h"
 #include "cloud/aws/aws_file.h"
+#include "rocksdb/cloud/cloud_env_options.h"
 #ifdef USE_AWS
 #include <aws/core/client/AWSError.h>
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/core/client/RetryStrategy.h>
-#endif // USE_AWS
+#endif  // USE_AWS
 
 namespace rocksdb {
 #ifdef USE_AWS
@@ -18,28 +18,28 @@ namespace rocksdb {
 //
 class AwsRetryStrategy : public Aws::Client::RetryStrategy {
  public:
-  AwsRetryStrategy(CloudEnv *env) : env_(env) {
+  AwsRetryStrategy(CloudEnv* env) : env_(env) {
     default_strategy_ = std::make_shared<Aws::Client::DefaultRetryStrategy>();
     Log(InfoLogLevel::INFO_LEVEL, env_->info_log_,
         "[aws] Configured custom retry policy");
   }
-  
-  ~AwsRetryStrategy() override { }
-   
+
+  ~AwsRetryStrategy() override {}
 
   // Returns true if the error can be retried given the error and the number of
   // times already tried.
   bool ShouldRetry(const Aws::Client::AWSError<Aws::Client::CoreErrors>& error,
                    long attemptedRetries) const override;
-  
+
   // Calculates the time in milliseconds the client should sleep before
   // attempting another request based on the error and attemptedRetries count.
-  long CalculateDelayBeforeNextRetry(const Aws::Client::AWSError<Aws::Client::CoreErrors>& error,
-                                     long attemptedRetries) const override;
+  long CalculateDelayBeforeNextRetry(
+      const Aws::Client::AWSError<Aws::Client::CoreErrors>& error,
+      long attemptedRetries) const override;
 
  private:
   // rocksdb retries, etc
-  CloudEnv *env_;
+  CloudEnv* env_;
 
   // The default strategy implemented by AWS client
   std::shared_ptr<Aws::Client::RetryStrategy> default_strategy_;
@@ -52,8 +52,9 @@ class AwsRetryStrategy : public Aws::Client::RetryStrategy {
 // Returns true if the error can be retried given the error and the number of
 // times already tried.
 //
-bool AwsRetryStrategy::ShouldRetry(const Aws::Client::AWSError<Aws::Client::CoreErrors>& error,
-                                   long attemptedRetries) const {
+bool AwsRetryStrategy::ShouldRetry(
+    const Aws::Client::AWSError<Aws::Client::CoreErrors>& error,
+    long attemptedRetries) const {
   auto ce = error.GetErrorType();
   const Aws::String errmsg = error.GetMessage();
   const Aws::String exceptionMsg = error.GetExceptionName();
@@ -97,18 +98,19 @@ bool AwsRetryStrategy::ShouldRetry(const Aws::Client::AWSError<Aws::Client::Core
 // attempting another request based on the error and attemptedRetries count.
 //
 long AwsRetryStrategy::CalculateDelayBeforeNextRetry(
-                                                     const Aws::Client::AWSError<Aws::Client::CoreErrors>& error, long attemptedRetries) const {
+    const Aws::Client::AWSError<Aws::Client::CoreErrors>& error,
+    long attemptedRetries) const {
   return default_strategy_->CalculateDelayBeforeNextRetry(error,
                                                           attemptedRetries);
 }
 
-Status AwsCloudOptions::GetClientConfiguration(CloudEnv *env,
-                                               const std::string& region,
-                                               Aws::Client::ClientConfiguration* config) {
+Status AwsCloudOptions::GetClientConfiguration(
+    CloudEnv* env, const std::string& region,
+    Aws::Client::ClientConfiguration* config) {
   config->connectTimeoutMs = 30000;
   config->requestTimeoutMs = 600000;
-  
-  const auto & cloud_env_options = env->GetCloudEnvOptions();
+
+  const auto& cloud_env_options = env->GetCloudEnvOptions();
   // Setup how retries need to be done
   config->retryStrategy = std::make_shared<AwsRetryStrategy>(env);
   if (cloud_env_options.request_timeout_ms != 0) {
@@ -119,12 +121,10 @@ Status AwsCloudOptions::GetClientConfiguration(CloudEnv *env,
   return Status::OK();
 }
 #else
-Status AwsCloudOptions::GetClientConfiguration(CloudEnv *,
-                                               const std::string& ,
-                                               Aws::Client::ClientConfiguration*) {
+Status AwsCloudOptions::GetClientConfiguration(
+    CloudEnv*, const std::string&, Aws::Client::ClientConfiguration*) {
   return Status::NotSupported("Not configured for AWS support");
 }
 #endif /* USE_AWS */
- 
-}  // namespace
 
+}  // namespace rocksdb

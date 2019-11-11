@@ -231,12 +231,15 @@ LIB_SOURCES =                                                   \
   cloud/cloud_env_impl.cc                                       \
   cloud/cloud_env_options.cc                                    \
   cloud/cloud_log_controller.cc                                 \
+  cloud/cloud_storage_provider.cc                               \
   cloud/manifest_reader.cc                                      \
   cloud/purge.cc                                                \
   cloud/cloud_manifest.cc                                       \
 
 ifeq (,$(shell $(CXX) -fsyntax-only -maltivec -xc /dev/null 2>&1))
-LIB_SOURCES_ASM =\
+
+LIB_SOURCES_ASM =
+\
   util/crc32c_ppc_asm.S
 LIB_SOURCES_C = \
   util/crc32c_ppc.c

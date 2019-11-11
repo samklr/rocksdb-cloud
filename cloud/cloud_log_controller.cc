@@ -4,21 +4,23 @@
 // A log file maps to a stream in Kinesis.
 //
 
+#include "cloud/cloud_log_controller.h"
+
 #include <fstream>
 #include <iostream>
 
-#include "cloud/cloud_log_controller.h"
 #include "cloud/filename.h"
-#include "rocksdb/status.h"
 #include "rocksdb/cloud/cloud_env_options.h"
+#include "rocksdb/status.h"
 #include "util/coding.h"
 #include "util/stderr_logger.h"
 #include "util/string_util.h"
 
 namespace rocksdb {
-CloudLogWritableFile::CloudLogWritableFile(
-    CloudEnv* env, const std::string& fname, const EnvOptions& /*options*/)
-  : env_(env), fname_(fname) {}
+CloudLogWritableFile::CloudLogWritableFile(CloudEnv* env,
+                                           const std::string& fname,
+                                           const EnvOptions& /*options*/)
+    : env_(env), fname_(fname) {}
 
 CloudLogWritableFile::~CloudLogWritableFile() {}
 
@@ -26,8 +28,7 @@ const std::chrono::microseconds CloudLogController::kRetryPeriod =
   std::chrono::seconds(30);
 
 CloudLogController::CloudLogController(CloudEnv* env)
-  : env_(env), running_(false) {
-
+    : env_(env), running_(false) {
   // Create a random number for the cache directory.
   const std::string uid = trim(env_->GetBaseEnv()->GenerateUniqueId());
 
@@ -47,8 +48,8 @@ CloudLogController::CloudLogController(CloudEnv* env)
 
 CloudLogController::~CloudLogController() {
   if (running_) {
-    // This is probably not a good situation as the derived class is partially destroyed
-    // but the tailer might still be active.
+    // This is probably not a good situation as the derived class is partially
+    // destroyed but the tailer might still be active.
     Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
         "[%s] CloudLogController closing.  Stopping stream.", Name());
     StopTailingStream();
@@ -57,8 +58,9 @@ CloudLogController::~CloudLogController() {
       "[%s] CloudLogController closed.", Name());
 }
 
-std::string CloudLogController::GetCachePath(const Slice& original_pathname) const {
-  const std::string & cache_dir = GetCacheDir();
+std::string CloudLogController::GetCachePath(
+    const Slice& original_pathname) const {
+  const std::string& cache_dir = GetCacheDir();
   return cache_dir + pathsep + basename(original_pathname.ToString());
 }
 
@@ -81,9 +83,8 @@ Status CloudLogController::Apply(const Slice& in) {
   // Apply operation on cache file.
   if (operation == kAppend) {
     Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
-        "[%s] Tailer: Appending %ld bytes to %s at offset %ld",
-        Name(), payload.size(), pathname.c_str(),
-        offset_in_file);
+        "[%s] Tailer: Appending %ld bytes to %s at offset %ld", Name(),
+        payload.size(), pathname.c_str(), offset_in_file);
 
     auto iter = cache_fds_.find(pathname);
 
@@ -107,8 +108,8 @@ Status CloudLogController::Apply(const Slice& in) {
       if (st.ok()) {
         cache_fds_[pathname] = std::move(result);
         Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
-            "[%s] Tailer: Successfully opened file %s and cached",
-            Name(), pathname.c_str());
+            "[%s] Tailer: Successfully opened file %s and cached", Name(),
+            pathname.c_str());
       } else {
           return st;
       }
@@ -127,7 +128,8 @@ Status CloudLogController::Apply(const Slice& in) {
     if (iter != cache_fds_.end()) {
       Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
           "[%s] Tailer: Delete file %s, but it is still open."
-          " Closing it now..", Name(), pathname.c_str());
+          " Closing it now..",
+          Name(), pathname.c_str());
       RandomRWFile* fd = iter->second.get();
       fd->Close();
       cache_fds_.erase(iter);
@@ -135,8 +137,8 @@ Status CloudLogController::Apply(const Slice& in) {
 
     st = env_->GetBaseEnv()->DeleteFile(pathname);
     Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
-        "[%s] Tailer: Deleted file: %s %s",
-        Name(), pathname.c_str(), st.ToString().c_str());
+        "[%s] Tailer: Deleted file: %s %s", Name(), pathname.c_str(),
+        st.ToString().c_str());
 
     if (st.IsNotFound()) {
       st = Status::OK();
@@ -149,14 +151,13 @@ Status CloudLogController::Apply(const Slice& in) {
       cache_fds_.erase(iter);
     }
     Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
-        "[%s] Tailer: Closed file %s %s",
-        Name(), pathname.c_str(), st.ToString().c_str());
+        "[%s] Tailer: Closed file %s %s", Name(), pathname.c_str(),
+        st.ToString().c_str());
   } else {
     st = Status::IOError("Unknown operation");
     Log(InfoLogLevel::DEBUG_LEVEL, env_->info_log_,
-        "[%s] Tailer: Unknown operation '%x': File %s %s",
-        Name(), operation, pathname.c_str(),
-        st.ToString().c_str());
+        "[%s] Tailer: Unknown operation '%x': File %s %s", Name(), operation,
+        pathname.c_str(), st.ToString().c_str());
   }
 
   return st;
@@ -237,7 +238,7 @@ bool CloudLogController::ExtractLogRecord(const Slice& input,
   return true;
 }
 
-Status CloudLogController::StartTailingStream(const std::string & topic) {
+Status CloudLogController::StartTailingStream(const std::string& topic) {
   if (tid_) {
     return Status::Busy("Tailer already started");
   }
@@ -265,7 +266,7 @@ void CloudLogController::StopTailingStream() {
 Status CloudLogController::Retry(RetryType func) {
   Status stat;
   std::chrono::microseconds start(env_->NowMicros());
-  
+
   while (true) {
     // If command is successful, return immediately
     stat = func();
@@ -284,5 +285,12 @@ Status CloudLogController::Retry(RetryType func) {
   }
   return stat;
 }
-  
+
+Status CloudLogController::SanitizeOptions() {
+  if (status_.ok()) {
+    status_ = StartTailingStream(env_->GetSrcBucketName());
+  }
+  return status_;
+}
+
 }  // namespace rocksdb

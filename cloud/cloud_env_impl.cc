@@ -1,9 +1,10 @@
 // Copyright (c) 2017 Rockset.
 #ifndef ROCKSDB_LITE
 
+#include "cloud/cloud_env_impl.h"
+
 #include <inttypes.h>
 
-#include "cloud/cloud_env_impl.h"
 #include "cloud/cloud_env_wrapper.h"
 #include "cloud/cloud_log_controller.h"
 #include "cloud/filename.h"
@@ -19,13 +20,122 @@
 #include "util/xxhash.h"
 
 namespace rocksdb {
+namespace detail {
 
-  CloudEnvImpl::CloudEnvImpl(const CloudEnvOptions& opts, Env* base, const std::shared_ptr<Logger>& l)
+using ScheduledJob =
+    std::pair<std::chrono::steady_clock::time_point, std::function<void(void)>>;
+struct Comp {
+  bool operator()(const ScheduledJob& a, const ScheduledJob& b) const {
+    return a.first < b.first;
+  }
+};
+struct JobHandle {
+  std::multiset<ScheduledJob, Comp>::iterator itr;
+  JobHandle(std::multiset<ScheduledJob, Comp>::iterator i)
+      : itr(std::move(i)) {}
+};
+
+class JobExecutor {
+ public:
+  shared_ptr<JobHandle> ScheduleJob(std::chrono::steady_clock::time_point time,
+                                    std::function<void(void)> callback);
+  void CancelJob(JobHandle* handle);
+
+  JobExecutor();
+  ~JobExecutor();
+
+ private:
+  void DoWork();
+
+  std::mutex mutex_;
+  // Notified when the earliest job to be scheduled has changed.
+  std::condition_variable jobs_changed_cv_;
+  std::multiset<ScheduledJob, Comp> scheduled_jobs_;
+  bool shutting_down_{false};
+
+  std::thread thread_;
+};
+
+JobExecutor::JobExecutor() {
+  thread_ = std::thread([this]() { DoWork(); });
+}
+
+JobExecutor::~JobExecutor() {
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    shutting_down_ = true;
+    jobs_changed_cv_.notify_all();
+  }
+  if (thread_.joinable()) {
+    thread_.join();
+  }
+}
+
+shared_ptr<JobHandle> JobExecutor::ScheduleJob(
+    std::chrono::steady_clock::time_point time,
+    std::function<void(void)> callback) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto itr = scheduled_jobs_.emplace(time, std::move(callback));
+  if (itr == scheduled_jobs_.begin()) {
+    jobs_changed_cv_.notify_all();
+  }
+  return std::make_shared<JobHandle>(itr);
+}
+
+void JobExecutor::CancelJob(JobHandle* handle) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  if (scheduled_jobs_.begin() == handle->itr) {
+    jobs_changed_cv_.notify_all();
+  }
+  scheduled_jobs_.erase(handle->itr);
+}
+
+void JobExecutor::DoWork() {
+  while (true) {
+    std::unique_lock<std::mutex> lk(mutex_);
+    if (shutting_down_) {
+      break;
+    }
+    if (scheduled_jobs_.empty()) {
+      jobs_changed_cv_.wait(lk);
+      continue;
+    }
+    auto earliest_job = scheduled_jobs_.begin();
+    auto earliest_job_time = earliest_job->first;
+    if (earliest_job_time >= std::chrono::steady_clock::now()) {
+      jobs_changed_cv_.wait_until(lk, earliest_job_time);
+      continue;
+    }
+    // invoke the function
+    lk.unlock();
+    earliest_job->second();
+    lk.lock();
+    scheduled_jobs_.erase(earliest_job);
+  }
+}
+
+}  // namespace detail
+
+detail::JobExecutor* GetJobExecutor() {
+  static detail::JobExecutor executor;
+  return &executor;
+}
+
+CloudEnvImpl::CloudEnvImpl(const CloudEnvOptions& opts, Env* base,
+                           const std::shared_ptr<Logger>& l)
     : CloudEnv(opts, base, l), purger_is_running_(true) {}
 
 CloudEnvImpl::~CloudEnvImpl() {
   if (cloud_log_controller_) {
     cloud_log_controller_->StopTailingStream();
+  }
+  {
+    std::lock_guard<std::mutex> lk(files_to_delete_mutex_);
+    using std::swap;
+    for (auto& e : files_to_delete_) {
+      GetJobExecutor()->CancelJob(e.second.get());
+    }
+    files_to_delete_.clear();
   }
   StopPurger();
 }
@@ -104,13 +214,14 @@ std::string CloudEnvImpl::RemapFilename(const std::string& logical_path) const {
 Status CloudEnvImpl::DeleteInvisibleFiles(const std::string& dbname) {
   Status s;
   if (HasDestBucket()) {
-    BucketObjectMetadata metadata;
-    s = ListObjects(GetDestBucketName(), GetDestObjectPath(), &metadata);
+    std::vector<std::string> pathnames;
+    s = storage_provider_->ListObjects(GetDestBucketName(), GetDestObjectPath(),
+                                       &pathnames);
     if (!s.ok()) {
       return s;
     }
 
-    for (auto& fname : metadata.pathnames) {
+    for (auto& fname : pathnames) {
       auto noepoch = RemoveEpoch(fname);
       if (IsSstFile(noepoch) || IsManifestFile(noepoch)) {
         if (RemapFilename(noepoch) != fname) {
@@ -507,8 +618,8 @@ Status CloudEnvImpl::GetCloudDbid(const std::string& local_dir,
 
   // Read dbid from src bucket if it exists
   if (HasSrcBucket()) {
-    Status st = GetObject(GetSrcBucketName(), GetSrcObjectPath() + "/IDENTITY",
-                          tmpfile);
+    Status st = storage_provider_->GetObject(
+        GetSrcBucketName(), GetSrcObjectPath() + "/IDENTITY", tmpfile);
     if (!st.ok() && !st.IsNotFound()) {
       return st;
     }
@@ -530,8 +641,8 @@ Status CloudEnvImpl::GetCloudDbid(const std::string& local_dir,
 
   // Read dbid from dest bucket if it exists
   if (HasDestBucket()) {
-    Status st = GetObject(GetDestBucketName(),
-                          GetDestObjectPath() + "/IDENTITY", tmpfile);
+    Status st = storage_provider_->GetObject(
+        GetDestBucketName(), GetDestObjectPath() + "/IDENTITY", tmpfile);
     if (!st.ok() && !st.IsNotFound()) {
       return st;
     }
@@ -758,8 +869,9 @@ Status CloudEnvImpl::SanitizeDirectory(const DBOptions& options,
   // Download IDENTITY, first try destination, then source
   if (HasDestBucket()) {
     // download IDENTITY from dest
-    st = GetObject(GetDestBucketName(), IdentityFileName(GetDestObjectPath()),
-                   IdentityFileName(local_name));
+    st = storage_provider_->GetObject(GetDestBucketName(),
+                                      IdentityFileName(GetDestObjectPath()),
+                                      IdentityFileName(local_name));
     if (!st.ok() && !st.IsNotFound()) {
       // If there was an error and it's not IsNotFound() we need to bail
       return st;
@@ -768,8 +880,9 @@ Status CloudEnvImpl::SanitizeDirectory(const DBOptions& options,
   }
   if (!got_identity_from_dest && HasSrcBucket() && !SrcMatchesDest()) {
     // download IDENTITY from src
-    st = GetObject(GetSrcBucketName(), IdentityFileName(GetSrcObjectPath()),
-                   IdentityFileName(local_name));
+    st = storage_provider_->GetObject(GetSrcBucketName(),
+                                      IdentityFileName(GetSrcObjectPath()),
+                                      IdentityFileName(local_name));
     if (!st.ok() && !st.IsNotFound()) {
       // If there was an error and it's not IsNotFound() we need to bail
       return st;
@@ -849,9 +962,9 @@ Status CloudEnvImpl::FetchCloudManifest(const std::string& local_dbname,
   }
   // first try to get cloudmanifest from dest
   if (HasDestBucket()) {
-    Status st =
-        GetObject(GetDestBucketName(), CloudManifestFile(GetDestObjectPath()),
-                  cloudmanifest);
+    Status st = storage_provider_->GetObject(
+        GetDestBucketName(), CloudManifestFile(GetDestObjectPath()),
+        cloudmanifest);
     if (!st.ok() && !st.IsNotFound()) {
       // something went wrong, bail out
       Log(InfoLogLevel::INFO_LEVEL, info_log_,
@@ -871,8 +984,9 @@ Status CloudEnvImpl::FetchCloudManifest(const std::string& local_dbname,
   }
   // we couldn't get cloud manifest from dest, need to try from src?
   if (HasSrcBucket() && !SrcMatchesDest()) {
-    Status st = GetObject(GetSrcBucketName(),
-                          CloudManifestFile(GetSrcObjectPath()), cloudmanifest);
+    Status st = storage_provider_->GetObject(
+        GetSrcBucketName(), CloudManifestFile(GetSrcObjectPath()),
+        cloudmanifest);
     if (!st.ok() && !st.IsNotFound()) {
       // something went wrong, bail out
       Log(InfoLogLevel::INFO_LEVEL, info_log_,
@@ -946,21 +1060,87 @@ Status CloudEnvImpl::RollNewEpoch(const std::string& local_dbname) {
     // upload new manifest, only if we have it (i.e. this is not a new
     // database, indicated by maxFileNumber)
     if (maxFileNumber > 0) {
-      st = PutObject(ManifestFileWithEpoch(local_dbname, newEpoch),
-                     GetDestBucketName(),
-                     ManifestFileWithEpoch(GetDestObjectPath(), newEpoch));
+      st = storage_provider_->PutObject(
+          ManifestFileWithEpoch(local_dbname, newEpoch), GetDestBucketName(),
+          ManifestFileWithEpoch(GetDestObjectPath(), newEpoch));
       if (!st.ok()) {
         return st;
       }
     }
     // upload new cloud manifest
-    st = PutObject(CloudManifestFile(local_dbname), GetDestBucketName(),
-                   CloudManifestFile(GetDestObjectPath()));
+    st = storage_provider_->PutObject(CloudManifestFile(local_dbname),
+                                      GetDestBucketName(),
+                                      CloudManifestFile(GetDestObjectPath()));
     if (!st.ok()) {
       return st;
     }
   }
   return Status::OK();
 }
+
+Status CloudEnvImpl::CopyLocalFileToDest(const std::string& local_name,
+                                         const std::string& dest_name) {
+  RemoveFileFromDeletionQueue(basename(local_name));
+  return storage_provider_->PutObject(local_name, GetDestBucketName(),
+                                      dest_name);
+}
+
+void CloudEnvImpl::RemoveFileFromDeletionQueue(const std::string& filename) {
+  std::lock_guard<std::mutex> lk(files_to_delete_mutex_);
+  auto itr = files_to_delete_.find(filename);
+  if (itr != files_to_delete_.end()) {
+    GetJobExecutor()->CancelJob(itr->second.get());
+    files_to_delete_.erase(itr);
+  }
+}
+
+Status CloudEnvImpl::DeleteCloudFileFromDest(const std::string& fname) {
+  assert(HasDestBucket());
+  auto base = basename(fname);
+  // add the job to delete the file in 1 hour
+  auto doDeleteFile = [this, base]() {
+    {
+      std::lock_guard<std::mutex> lk(files_to_delete_mutex_);
+      auto itr = files_to_delete_.find(base);
+      if (itr == files_to_delete_.end()) {
+        // File was removed from files_to_delete_, do not delete!
+        return;
+      }
+      files_to_delete_.erase(itr);
+    }
+    auto path = GetDestObjectPath() + "/" + base;
+    // we are ready to delete the file!
+    auto st = storage_provider_->DeleteObject(GetDestBucketName(), path);
+    if (!st.ok() && !st.IsNotFound()) {
+      Log(InfoLogLevel::ERROR_LEVEL, info_log_,
+          "[s3] DeleteFile DeletePathInS3 file %s error %s", path.c_str(),
+          st.ToString().c_str());
+    }
+  };
+  {
+    std::lock_guard<std::mutex> lk(files_to_delete_mutex_);
+    if (files_to_delete_.find(base) != files_to_delete_.end()) {
+      // already in the queue
+      return Status::OK();
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(files_to_delete_mutex_);
+    auto handle = GetJobExecutor()->ScheduleJob(
+        std::chrono::steady_clock::now() + file_deletion_delay_,
+        std::move(doDeleteFile));
+    files_to_delete_.emplace(base, std::move(handle));
+  }
+  return Status::OK();
+}
+
+Status CloudEnvImpl::SanitizeOptions() {
+  Status s = storage_provider_->SanitizeOptions();
+  if (cloud_log_controller_ && s.ok()) {
+    s = cloud_log_controller_->SanitizeOptions();
+  }
+  return s;
+}
+
 }  // namespace rocksdb
 #endif  // ROCKSDB_LITE
