@@ -25,6 +25,7 @@
 #include "rocksdb/flush_block_policy.h"
 #include "rocksdb/rocksdb_namespace.h"
 #include "rocksdb/table.h"
+#include "rocksdb/table_properties.h"
 #include "rocksdb/utilities/options_type.h"
 #include "table/block_based/block_based_table_builder.h"
 #include "table/block_based/block_based_table_reader.h"
@@ -222,7 +223,8 @@ static std::unordered_map<std::string,
     block_base_table_prepopulate_block_cache_string_map = {
         {"kDisable", BlockBasedTableOptions::PrepopulateBlockCache::kDisable},
         {"kFlushOnly",
-         BlockBasedTableOptions::PrepopulateBlockCache::kFlushOnly}};
+         BlockBasedTableOptions::PrepopulateBlockCache::kFlushOnly},
+        {"kFlushAndCompaction", BlockBasedTableOptions::PrepopulateBlockCache::kFlushAndCompaction}};
 
 static std::unordered_map<std::string, OptionTypeInfo>
     block_based_table_type_info = {
@@ -412,7 +414,6 @@ static std::unordered_map<std::string, OptionTypeInfo>
                    num_file_reads_for_auto_readahead),
           OptionType::kUInt64T, OptionVerificationType::kNormal,
           OptionTypeFlags::kMutable}},
-
 };
 
 // TODO(myabandeh): We should return an error instead of silently changing the
@@ -839,6 +840,12 @@ std::string BlockBasedTableFactory::GetPrintableOptions() const {
            "  num_file_reads_for_auto_readahead: %" PRIu64 "\n",
            table_options_.num_file_reads_for_auto_readahead);
   ret.append(buffer);
+  if (table_options_.compaction_prepopulate_block_cache_filter) {
+    snprintf(buffer, kBufferSize,
+             "  compaction_prepopulate_block_cache_filter: %p\n",
+                 &table_options_.compaction_prepopulate_block_cache_filter);
+    ret.append(buffer);
+  }
   return ret;
 }
 

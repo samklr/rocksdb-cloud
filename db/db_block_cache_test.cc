@@ -26,6 +26,7 @@
 #include "rocksdb/table_properties.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/unique_id_impl.h"
+#include "test_util/mock_time_env.h"
 #include "util/compression.h"
 #include "util/defer.h"
 #include "util/hash.h"
@@ -610,6 +611,77 @@ TEST_F(DBBlockCacheTest, DynamicallyWarmCacheDuringFlush) {
     ASSERT_EQ(0,
               options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_HIT));
   }
+}
+
+TEST_F(DBBlockCacheTest, WarmCacheDuringFlushAndCompaction) {
+  Options options = CurrentOptions();
+  options.create_if_missing = true;
+  options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
+  options.disable_auto_compactions = true;
+  auto mock_clock = std::make_shared<MockSystemClock>(env_->GetSystemClock());
+  auto mock_env = std::make_unique<CompositeEnvWrapper>(env_, mock_clock);
+  options.env = mock_env.get();
+
+  auto base_env = Env::Default();
+  base_env->NewLogger(test::TmpDir(base_env) + "/rocksdb-cloud.log",
+                      &options.info_log);
+  options.info_log->SetInfoLogLevel(InfoLogLevel::INFO_LEVEL);
+
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = NewLRUCache(1 << 25, 0, false);
+  table_options.cache_index_and_filter_blocks = false;
+  table_options.prepopulate_block_cache =
+      BlockBasedTableOptions::PrepopulateBlockCache::kFlushAndCompaction;
+  std::atomic<uint64_t> oldest_ancestor_time_to_prepopulate{10};
+  table_options.compaction_prepopulate_block_cache_filter =
+      [&oldest_ancestor_time_to_prepopulate](const TableProperties& props) {
+        return props.creation_time >=
+               oldest_ancestor_time_to_prepopulate.load();
+      };
+
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  DestroyAndReopen(options);
+
+  std::string value(kValueSize, 'a');
+  mock_clock->SetCurrentTime(10);
+  oldest_ancestor_time_to_prepopulate.store(10);
+  for (size_t i = 1; i <= 2; i++) {
+    ASSERT_OK(Put(std::to_string(i), value));
+    ASSERT_OK(Flush());
+    ASSERT_EQ(1,
+              options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_ADD));
+
+    ASSERT_EQ(value, Get(std::to_string(i)));
+    ASSERT_EQ(0,
+              options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_ADD));
+    ASSERT_EQ(
+        0, options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_MISS));
+    ASSERT_EQ(1,
+              options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_HIT));
+  }
+
+  CompactRangeOptions cro;
+  // Ensure files are rewritten, not just trivially moved.
+  cro.bottommost_level_compaction = BottommostLevelCompaction::kForceOptimized;
+  ASSERT_OK(db_->CompactRange(cro, /*begin=*/nullptr, /*end=*/nullptr));
+  EXPECT_EQ(1, options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_ADD));
+
+  mock_clock->MockSleepForSeconds(20);
+  oldest_ancestor_time_to_prepopulate.store(20);
+
+  for (size_t i = 3; i <= 5; i++) {
+    ASSERT_OK(Put(std::to_string(i), value));
+    ASSERT_OK(Flush());
+    ASSERT_EQ(1,
+              options.statistics->getAndResetTickerCount(BLOCK_CACHE_DATA_ADD));
+  }
+
+  ASSERT_OK(db_->CompactRange(cro, /*begin=*/nullptr, /*end=*/nullptr));
+  // All of them are compacted into one file, with oldest_ancestor_time = 10,
+  // which is < prepopulation threshold
+  EXPECT_EQ(0, options.statistics->getTickerCount(BLOCK_CACHE_DATA_ADD));
+
+  Destroy(options);
 }
 #endif
 

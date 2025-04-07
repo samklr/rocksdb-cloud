@@ -1396,6 +1396,17 @@ void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
       case BlockBasedTableOptions::PrepopulateBlockCache::kDisable:
         warm_cache = false;
         break;
+      // Rocksdb-Cloud contribution begin
+      case BlockBasedTableOptions::PrepopulateBlockCache::kFlushAndCompaction: {
+        warm_cache =
+            (r->reason == TableFileCreationReason::kFlush ||
+             (r->reason == TableFileCreationReason::kCompaction &&
+              r->table_options.compaction_prepopulate_block_cache_filter &&
+              r->table_options.compaction_prepopulate_block_cache_filter(
+                  r->props)));
+        break;
+      }
+      // Rocksdb-Cloud contribution end
       default:
         // missing case
         assert(false);
