@@ -43,13 +43,13 @@
 
 #include "cloud/aws/aws_file.h"
 #include "cloud/aws/aws_file_system.h"
-#include "rocksdb/cloud/cloud_storage_provider_impl.h"
 #include "cloud/filename.h"
 #include "file/read_write_util.h"
 #include "file/writable_file_writer.h"
 #include "port/port.h"
 #include "rocksdb/cloud/cloud_file_system.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
+#include "rocksdb/cloud/cloud_storage_provider_impl.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/options.h"
 #include "util/stderr_logger.h"
@@ -420,8 +420,8 @@ class S3StorageProvider : public CloudStorageProviderImpl {
                             uint64_t* remote_size) override;
   IOStatus DoPutCloudObject(const std::string& local_file,
                             const std::string& bucket_name,
-                            const std::string& object_path,
-                            uint64_t file_size) override;
+                            const std::string& object_path, uint64_t file_size,
+                            const PutObjectOptions& options = {}) override;
 
  private:
   struct HeadObjectResult {
@@ -688,7 +688,7 @@ IOStatus S3StorageProvider::ExistsCloudObject(const std::string& bucket_name,
 IOStatus S3StorageProvider::GetCloudObjectSize(const std::string& bucket_name,
                                                const std::string& object_path,
                                                uint64_t* filesize) {
-  HeadObjectResult result;                                             
+  HeadObjectResult result;
   result.size = filesize;
   return HeadObject(bucket_name, object_path, &result);
 }
@@ -1010,7 +1010,8 @@ IOStatus S3StorageProvider::DoGetCloudObject(const std::string& bucket_name,
 IOStatus S3StorageProvider::DoPutCloudObject(const std::string& local_file,
                                              const std::string& bucket_name,
                                              const std::string& object_path,
-                                             uint64_t file_size) {
+                                             uint64_t file_size,
+                                             const PutObjectOptions& options) {
   if (s3client_->HasTransferManager()) {
     auto handle = s3client_->UploadFile(ToAwsString(bucket_name),
                                         ToAwsString(object_path),

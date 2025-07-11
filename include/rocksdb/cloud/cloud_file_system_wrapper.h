@@ -91,7 +91,8 @@ class MockStorageProvider : public CloudStorageProvider {
 
   IOStatus PutCloudObject(const std::string& /*local_path*/,
                           const std::string& /*bucket_name*/,
-                          const std::string& /*object_path*/) override {
+                          const std::string& /*object_path*/,
+                          const PutObjectOptions& /*options*/ = {}) override {
     return notsup_;
   }
 

@@ -42,6 +42,11 @@ struct CloudObjectInformation {
   std::unordered_map<std::string, std::string> metadata;
 };
 
+// Options for uploading an object to the cloud
+struct PutObjectOptions {
+  std::vector<uint8_t> md5_checksum{};
+};
+
 // A CloudStorageProvider provides the interface to the cloud object
 // store.  Methods can create and empty buckets, as well as other
 // standard bucket object operations get/put/list/delete
@@ -107,10 +112,12 @@ class CloudStorageProvider : public Configurable {
                                   const std::string& object_path,
                                   const std::string& local_path) = 0;
 
-  // Uploads object to the cloud
+  // Uploads object to the cloud. If checksum is provided in options, it will be
+  // used to verify the file after it is uploaded.
   virtual IOStatus PutCloudObject(const std::string& local_path,
                                   const std::string& bucket_name,
-                                  const std::string& object_path) = 0;
+                                  const std::string& object_path,
+                                  const PutObjectOptions& options = {}) = 0;
 
   // Updates/Sets the metadata of the object in cloud storage
   virtual IOStatus PutCloudObjectMetadata(
